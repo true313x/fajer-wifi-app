@@ -1,31 +1,115 @@
-name: Build APK from zip
+name: Build FajerWiFiAudit APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Unzip project
-        run: |
-          ZIP_FILE=$(ls *.zip | head -n1)
-          echo "Unzipping: $ZIP_FILE"
-          unzip -o "$ZIP_FILE"
-      - uses: actions/setup-java@v4
+      # 1. Checkout repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Java 17
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.14.5
-      - name: Build debug APK
-        working-directory: FajerWiFiAudit
-        run: gradle assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
+          cache: gradle
+
+      # 3. Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 4. Accept Android licenses
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses || true
+
+      # 5. Extract ZIP
+      - name: Extract project ZIP
+        run: |
+          rm -rf extracted
+          mkdir extracted
+          unzip -q -o FajerWiFiAudit.zip -d extracted
+
+          echo "===== ZIP CONTENT ====="
+          find extracted -maxdepth 3 -type f | head -200
+
+      # 6. Find Android project
+      - name: Locate Gradle project
+        run: |
+          echo "===== SEARCHING FOR GRADLE PROJECT ====="
+
+          SETTINGS=$(find extracted \
+            -type f \( \
+              -name "settings.gradle" \
+              -o -name "settings.gradle.kts" \
+            \) | head -1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: No settings.gradle or settings.gradle.kts found!"
+            echo "The ZIP does not appear to contain a valid Gradle Android project."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Gradle project found at:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # 7. Verify project
+      - name: Verify Android project
+        run: |
+          echo "===== PROJECT FILES ====="
+          ls -la "$PROJECT_DIR"
+
+          echo "===== GRADLE FILES ====="
+          find "$PROJECT_DIR" -maxdepth 2 -type f \
+            \( -name "gradlew" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \) \
+            -print
+
+      # 8. Build
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --stacktrace --info
+          else
+            echo "Gradle Wrapper not found."
+            echo "Using installed Gradle instead."
+
+            gradle --version
+            gradle assembleDebug --stacktrace --info
+          fi
+
+      # 9. Find APK
+      - name: Find generated APK
+        run: |
+          echo "===== GENERATED APK FILES ====="
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # 10. Upload APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: fajer-debug-apk
-          path: FajerWiFiAudit/app/build/outputs/apk/debug/*.apk
+          path: |
+            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
