@@ -7,8 +7,12 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -17,51 +21,87 @@ jobs:
       # 1. Checkout repository
       # =========================================================
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
 
       # =========================================================
       # 2. Check ZIP
       # =========================================================
       - name: Check ZIP file
+        shell: bash
         run: |
-          echo "===== REPOSITORY ====="
+          set -e
+
+          echo "========================================"
+          echo "REPOSITORY CONTENTS"
+          echo "========================================"
+
           ls -lah
 
-          echo "===== ZIP FILE ====="
+          echo ""
+          echo "========================================"
+          echo "SEARCHING FOR ZIP"
+          echo "========================================"
 
-          if [ ! -f "FajerWiFiAudit.zip" ]; then
-            echo "ERROR: FajerWiFiAudit.zip was not found!"
-            echo "Files in repository:"
-            find . -maxdepth 2 -type f -print
+          ZIP_FILE=""
+
+          if [ -f "FajerWiFiAudit.zip" ]; then
+            ZIP_FILE="FajerWiFiAudit.zip"
+          else
+            ZIP_FILE=$(find . -maxdepth 2 -type f \
+              \( -iname "*.zip" \) \
+              | head -1 || true)
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found."
+            echo ""
+            echo "Repository files:"
+            find . -maxdepth 3 -type f -print
             exit 1
           fi
 
-          ls -lh FajerWiFiAudit.zip
+          echo "ZIP FOUND:"
+          echo "$ZIP_FILE"
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
 
       # =========================================================
       # 3. Extract ZIP
       # =========================================================
       - name: Extract Android project
+        shell: bash
         run: |
+          set -e
+
           rm -rf extracted
           mkdir -p extracted
 
-          unzip -q -o FajerWiFiAudit.zip -d extracted
+          echo "Extracting:"
+          echo "$ZIP_FILE"
 
-          echo "===== EXTRACTED PROJECT ====="
-          find extracted -maxdepth 4 -type f | head -300
+          unzip -q -o "$ZIP_FILE" -d extracted
+
+          echo ""
+          echo "========================================"
+          echo "EXTRACTED CONTENTS"
+          echo "========================================"
+
+          find extracted -maxdepth 5 -type f -print | head -500
 
 
       # =========================================================
-      # 4. Find Gradle project automatically
+      # 4. Locate Gradle project
       # =========================================================
       - name: Locate Gradle project
         shell: bash
         run: |
+          set -e
 
-          echo "Searching for Gradle project..."
+          echo "========================================"
+          echo "SEARCHING FOR GRADLE PROJECT"
+          echo "========================================"
 
           SETTINGS_FILE=$(find extracted \
             -type f \
@@ -70,24 +110,29 @@ jobs:
               -o \
               -name "settings.gradle.kts" \
             \) \
-            | head -1)
+            | head -1 || true)
 
           if [ -z "$SETTINGS_FILE" ]; then
 
             echo ""
-            echo "========================================"
-            echo "ERROR: Gradle project not found"
-            echo "========================================"
+            echo "ERROR: Gradle project not found."
             echo ""
-
-            echo "The ZIP does not contain:"
-            echo "settings.gradle"
-            echo "or"
-            echo "settings.gradle.kts"
+            echo "Searching for Gradle files..."
+            find extracted -type f \
+              \( \
+                -name "build.gradle" \
+                -o \
+                -name "build.gradle.kts" \
+                -o \
+                -name "gradlew" \
+                -o \
+                -name "gradle-wrapper.properties" \
+              \) \
+              -print
 
             echo ""
-            echo "ZIP contents:"
-            find extracted -maxdepth 5 -type f -print
+            echo "Complete ZIP structure:"
+            find extracted -maxdepth 8 -print
 
             exit 1
           fi
@@ -96,39 +141,61 @@ jobs:
 
           echo ""
           echo "========================================"
-          echo "Gradle project found"
+          echo "GRADLE PROJECT FOUND"
           echo "========================================"
+
+          echo "Settings:"
+          echo "$SETTINGS_FILE"
+
+          echo ""
+          echo "Project directory:"
           echo "$PROJECT_DIR"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
 
       # =========================================================
-      # 5. Show project structure
+      # 5. Verify Android project
       # =========================================================
       - name: Verify Android project
+        shell: bash
         run: |
+          set -e
 
-          echo "===== PROJECT DIRECTORY ====="
+          echo "========================================"
+          echo "PROJECT DIRECTORY"
+          echo "========================================"
+
           ls -lah "$PROJECT_DIR"
 
           echo ""
-          echo "===== PROJECT FILES ====="
+          echo "========================================"
+          echo "GRADLE FILES"
+          echo "========================================"
 
           find "$PROJECT_DIR" \
-            -maxdepth 3 \
             -type f \
-            | sort \
-            | head -300
+            \( \
+              -name "settings.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+              -o \
+              -name "build.gradle" \
+              -o \
+              -name "build.gradle.kts" \
+              -o \
+              -name "gradlew" \
+              -o \
+              -name "gradle-wrapper.properties" \
+            \) \
+            -print
 
 
       # =========================================================
       # 6. Setup Java
-      # IMPORTANT:
-      # No Gradle cache here because project was inside ZIP
       # =========================================================
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -138,59 +205,46 @@ jobs:
       # 7. Setup Android SDK
       # =========================================================
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
 
       # =========================================================
       # 8. Accept Android SDK licenses
       # =========================================================
-      - name: Accept Android licenses
+      - name: Accept Android SDK licenses
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses > /dev/null || true
 
 
       # =========================================================
-      # 9. Build APK
+      # 9. Prepare Gradle
       # =========================================================
-      - name: Build Debug APK
+      - name: Prepare Gradle
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
+          set -e
 
           echo "========================================"
-          echo "BUILDING ANDROID APK"
+          echo "PREPARING GRADLE"
           echo "========================================"
-
-          echo ""
-          echo "Java:"
-          java -version
-
-          echo ""
-          echo "Project:"
-          pwd
-
-          echo ""
-          echo "Files:"
-          ls -lah
-
-          # -----------------------------------------
-          # Use Gradle Wrapper if project contains it
-          # -----------------------------------------
 
           if [ -f "./gradlew" ]; then
 
-            echo ""
             echo "Gradle Wrapper detected."
 
             chmod +x ./gradlew
 
-            ./gradlew assembleDebug --stacktrace
+            echo ""
+            echo "Gradle Wrapper version:"
+            ./gradlew --version
 
           else
 
-            echo ""
             echo "Gradle Wrapper NOT FOUND."
-            echo "Installing Gradle 8.14.5..."
+
+            echo "Creating Gradle installation..."
 
             cd /tmp
 
@@ -202,22 +256,103 @@ jobs:
 
             export PATH="/tmp/gradle-8.14.5/bin:$PATH"
 
-            cd "$GITHUB_WORKSPACE/$PROJECT_DIR"
+            echo "GRADLE_HOME=/tmp/gradle-8.14.5" >> "$GITHUB_ENV"
+            echo "/tmp/gradle-8.14.5/bin" >> "$GITHUB_PATH"
 
-            gradle assembleDebug --stacktrace
+            echo ""
+            echo "Installed Gradle:"
+            gradle --version
 
           fi
 
 
       # =========================================================
-      # 10. Find APK
+      # 10. Build Debug APK
       # =========================================================
-      - name: Find generated APK
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          set -e
 
           echo "========================================"
-          echo "SEARCHING FOR APK"
+          echo "BUILDING FAJER WIFI AUDIT APK"
           echo "========================================"
+
+          echo ""
+          echo "Java:"
+          java -version
+
+          echo ""
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+          echo ""
+          echo "Project:"
+          pwd
+
+          echo ""
+          echo "Project files:"
+          ls -lah
+
+          echo ""
+          echo "========================================"
+          echo "RUNNING GRADLE BUILD"
+          echo "========================================"
+
+          if [ -f "./gradlew" ]; then
+
+            chmod +x ./gradlew
+
+            ./gradlew \
+              assembleDebug \
+              --stacktrace \
+              --no-daemon
+
+          else
+
+            gradle \
+              assembleDebug \
+              --stacktrace \
+              --no-daemon
+
+          fi
+
+
+      # =========================================================
+      # 11. Find generated APK
+      # =========================================================
+      - name: Find generated APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "SEARCHING FOR GENERATED APK"
+          echo "========================================"
+
+          APK_COUNT=$(find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            | wc -l)
+
+          echo "APK count: $APK_COUNT"
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo ""
+            echo "ERROR: APK was not generated."
+            echo ""
+            echo "Build directories:"
+            find "$PROJECT_DIR" \
+              -type d \
+              -name "build" \
+              -print
+
+            exit 1
+          fi
+
+          echo ""
+          echo "Generated APK files:"
 
           find "$PROJECT_DIR" \
             -type f \
@@ -226,12 +361,13 @@ jobs:
 
 
       # =========================================================
-      # 11. Upload APK
+      # 12. Upload APK
       # =========================================================
-      - name: Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: FajerWiFiAudit-debug-apk
           path: |
             ${{ env.PROJECT_DIR }}/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
+          retention-days: 14
